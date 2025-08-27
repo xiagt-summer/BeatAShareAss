@@ -1,76 +1,65 @@
-# Stock Price Boundary Analysis System
+# Stock Boundary Analysis System
 
-A tool for calculating dynamic price boundaries of Chinese A-share stocks using historical minute-frequency trading data and statistical volatility analysis.
-
-## Overview
-
-This system analyzes intraday price movements to establish statistical boundaries for stock prices. It processes minute-level trading data to compute volatility patterns and generate upper/lower price boundaries based on historical behavior.
+Statistical price boundary calculator for A-share stocks using 14-day volatility patterns.
 
 ## Usage
 
 ```bash
-python3 src/main.py <csv_file> <opening_price> [-o output_file]
+python3 src/main.py <data_file> <open_price> --sc <security_code> [options]
 ```
 
-### Parameters
+### Required Arguments
 
-- `csv_file`: Path to the stock data CSV file
-- `opening_price`: Today's opening price for boundary calculation
-- `-o, --output`: Optional output file path (default: `recent_XXXXXX.csv`)
+- `data_file`: CSV file with minute-level trading data
+- `open_price`: Opening price (number) or CSV file mapping SecurityCode to OpenPrice
+- `--sc`: Security code (6-digit) or "ALL" to process all stocks
+
+### Optional Arguments
+
+- `-o, --output`: Custom output file (default: `recent_XXXXXX.csv`)
 
 ### Examples
 
 ```bash
-# Basic usage with default output
-python3 src/main.py data/002714.csv 55.06
+# Single stock with fixed opening price
+python3 src/main.py data/etf1min.csv 0.85 --sc 159713
+
+# Single stock with opening prices from CSV
+python3 src/main.py data/etf1min.csv open.csv --sc 159713
+
+# Process all stocks in file
+python3 src/main.py data/etf1min.csv open.csv --sc ALL
 ```
 
-## Data Format
+## Data Formats
 
-### Input CSV Structure
+### Input: Trading Data (etf1min.csv)
+```csv
+TimeStamp,SecurityCode,ClosePrice,HighPrice,LowPrice,OpenPrice,TurnoverValue,TurnoverVol
+2025-07-01 09:25:00,159713,0.854,0.854,0.854,0.854,300608.0,352000.0
+```
 
-| Column | Description | Format |
-|--------|-------------|--------|
-| Date | Trading date | YYYYMMDD |
-| SecurityID | Stock code | String |
-| TimeStamp | Time of data point | HH:MM:SS |
-| ClosePrice | Closing price at minute | Float |
-| LowPrice | Lowest price in minute | Float |
-| HighPrice | Highest price in minute | Float |
-| OpenPrice | Opening price at minute | Float |
-| TurnoverVol | Trading volume | Float |
-| TurnoverValue | Trading value | Float |
+### Input: Opening Prices (open.csv)
+```csv
+SecurityCode,OpenPrice
+159713,1.235
+002714,54.500
+```
 
-### Output CSV Structure
+### Output: Boundaries (recent_XXXXXX.csv)
+```csv
+TimeStamp,lowerbound,upperbound
+09:31:00,49.712,54.814
+```
 
-| Column | Description | Format |
-|--------|-------------|--------|
-| TimeStamp | Trading time | HH:MM:SS |
-| lowerbound | Statistical lower boundary | Float (2 decimals) |
-| upperbound | Statistical upper boundary | Float (2 decimals) |
+## Algorithm
 
-## Methodology
+Calculates time-specific volatility from 14 trading days:
 
-### Statistical Boundary Calculation
+1. **Movement**: `|Close[t] / Open[09:31] - 1|` for each minute
+2. **Volatility**: Average movement across days for each timestamp
+3. **Boundaries**: 
+   - Lower: `min(open, prev_close) × (1 - σ)`
+   - Upper: `max(open, prev_close) × (1 + σ)`
 
-1. **Data Selection**: Extract the most recent 14 trading days
-2. **Movement Calculation**: For each minute j on day i:
-   ```
-   move[i,j] = |ClosePrice[i,j] / OpenPrice[i,09:31] - 1|
-   ```
-3. **Volatility Estimation**: Calculate average movement across days:
-   ```
-   σ[j] = Σ(move[i,j]) / 14
-   ```
-4. **Boundary Generation**:
-   ```
-   lowerbound[j] = min(x, y) × (1 - σ[j])
-   upperbound[j] = max(x, y) × (1 + σ[j])
-   ```
-   Where x = today's opening price, y = yesterday's closing price
-
-### Trading Hours
-
-Analysis covers standard A-share market hours:
-- Morning session: 09:30 - 11:30
-- Afternoon session: 13:00 - 15:00
+Trading hours: 09:30-11:30, 13:00-15:00 (A-share market)

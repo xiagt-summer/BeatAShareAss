@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """Stock Price Boundary Analysis System
 
 Calculates statistical price boundaries for A-share stocks based on historical
@@ -28,7 +29,7 @@ def is_trading_time(timestamp):
     
     return (morning_start <= time <= morning_end) or (afternoon_start <= time <= afternoon_end)
 
-def calculate_bounds(file_path, open_price):
+def calculate_bounds(file_path, open_price, security_id=None):
     """Calculate statistical price boundaries based on historical volatility.
     
     Processes minute-level trading data from the most recent 14 trading days,
@@ -38,6 +39,7 @@ def calculate_bounds(file_path, open_price):
     Args:
         file_path (str): Path to CSV file containing stock trading data
         open_price (float): Today's opening price for boundary calculation
+        security_id (str): Optional SecurityID to filter data for specific stock
     
     Returns:
         pl.DataFrame: Contains TimeStamp, lowerbound, and upperbound columns
@@ -51,6 +53,27 @@ def calculate_bounds(file_path, open_price):
     """
     # Load trading data from CSV
     df = pl.read_csv(file_path)
+    
+    # Check format and normalize columns
+    if "SecurityCode" in df.columns:
+        # New format (etf1min.csv): TimeStamp contains datetime, SecurityCode as identifier
+        df = df.with_columns([
+            pl.col("TimeStamp").str.slice(0, 10).str.replace("-", "").alias("Date"),
+            pl.col("TimeStamp").str.slice(11, 19).alias("TimeStamp_new"),
+            pl.col("SecurityCode").cast(pl.Utf8).str.zfill(6).alias("SecurityID")
+        ])
+        df = df.drop("TimeStamp").rename({"TimeStamp_new": "TimeStamp"})
+    elif "SecurityID" in df.columns:
+        # Old format (002714.csv): Date and TimeStamp separate, SecurityID as identifier
+        # Drop unnamed index column if exists
+        if "" in df.columns or df.columns[0] == "":
+            df = df.drop(df.columns[0])
+        # Ensure SecurityID is string and format as 6 digits
+        df = df.with_columns(pl.col("SecurityID").cast(pl.Utf8).str.zfill(6).alias("SecurityID"))
+    
+    # Filter by SecurityID if specified
+    if security_id is not None:
+        df = df.filter(pl.col("SecurityID") == str(security_id).zfill(6))
     
     # Select 14 most recent trading days for analysis
     unique_dates = df.select("Date").unique().sort("Date")
@@ -107,16 +130,16 @@ def calculate_bounds(file_path, open_price):
         (max_price * (1 + pl.col("sigma"))).alias("upperbound")
     ])
     
-    # Format output with precise decimal handling
+    # Format output with precise decimal handling to 3 decimal places
     # Floor operation for lower bounds (conservative)
     # Ceiling operation for upper bounds (expansive)
     result = bounds.with_columns([
-        ((pl.col("lowerbound") * 100).floor() / 100).alias("lowerbound"),
-        ((pl.col("upperbound") * 100).ceil() / 100).alias("upperbound")
+        ((pl.col("lowerbound") * 1000).floor() / 1000).alias("lowerbound"),
+        ((pl.col("upperbound") * 1000).ceil() / 1000).alias("upperbound")
     ]).select([
         "TimeStamp",
-        pl.col("lowerbound").map_elements(lambda x: round(x, 2), return_dtype=pl.Float64).alias("lowerbound"),
-        pl.col("upperbound").map_elements(lambda x: round(x, 2), return_dtype=pl.Float64).alias("upperbound")
+        pl.col("lowerbound").map_elements(lambda x: round(x, 3), return_dtype=pl.Float64).alias("lowerbound"),
+        pl.col("upperbound").map_elements(lambda x: round(x, 3), return_dtype=pl.Float64).alias("upperbound")
     ])
     
     return result
@@ -134,8 +157,14 @@ def main():
     )
     parser.add_argument(
         "open_price", 
-        type=float, 
-        help="Today's opening price for boundary calculation"
+        type=str, 
+        help="Today's opening price (number) or CSV file with SecurityCode,OpenPrice columns"
+    )
+    parser.add_argument(
+        "--sc",
+        type=str,
+        required=True,
+        help="Security code to analyze (use 'ALL' to process all stocks)"
     )
     parser.add_argument(
         "--output", "-o", 
@@ -154,26 +183,95 @@ def main():
             print(f"Error: Input file {args.infile} not found")
             return 1
     
-    # Execute boundary calculation
-    result = calculate_bounds(str(file_path), args.open_price)
+    # Process open_price parameter - can be a number or CSV file
+    open_price_map = {}
+    try:
+        # Try to parse as float first
+        open_price_default = float(args.open_price)
+        # If successful, use this value for all securities
+        open_price_map = None  # Signal to use default value
+    except ValueError:
+        # Not a number, try to load as CSV file
+        open_price_path = Path(args.open_price)
+        if not open_price_path.exists():
+            open_price_path = Path("data") / args.open_price
+            if not open_price_path.exists():
+                print(f"Error: Open price file {args.open_price} not found")
+                return 1
+        
+        # Load open prices from CSV
+        open_df = pl.read_csv(str(open_price_path))
+        # Convert SecurityCode to string and format as 6 digits
+        open_df = open_df.with_columns(pl.col("SecurityCode").cast(pl.Utf8).str.zfill(6))
+        # Create dictionary mapping SecurityCode to OpenPrice
+        open_price_map = dict(zip(open_df["SecurityCode"], open_df["OpenPrice"]))
+        open_price_default = None
     
-    # Display analysis summary
-    print(f"Stock Analysis for {file_path.name}")
-    print(f"Opening Price: {args.open_price}")
-    print("\nBounds by TimeStamp:")
-    print(result)
+    # Load data to get available security codes
+    df = pl.read_csv(str(file_path))
     
-    # Configure output destination
-    if args.output:
-        output_file = args.output
+    # Handle different column names based on format
+    if "SecurityCode" in df.columns:
+        # New format: use SecurityCode, format as 6 digits
+        df = df.with_columns(pl.col("SecurityCode").cast(pl.Utf8).str.zfill(6).alias("SecurityID"))
+    elif "SecurityID" in df.columns:
+        # Old format: use SecurityID, format as 6 digits
+        # Drop unnamed index column if exists
+        if "" in df.columns or df.columns[0] == "":
+            df = df.drop(df.columns[0])
+        df = df.with_columns(pl.col("SecurityID").cast(pl.Utf8).str.zfill(6).alias("SecurityID"))
+    
+    available_codes = df.select("SecurityID").unique()["SecurityID"].to_list()
+    
+    # Determine which security codes to process
+    if args.sc.upper() == "ALL":
+        security_codes = available_codes
+        print(f"Processing all {len(security_codes)} security codes: {security_codes}")
     else:
-        # Generate default filename using stock code
-        stock_code = file_path.stem
-        output_file = f"recent_{stock_code}.csv"
+        # Convert to string and format as 6 digits
+        security_code = str(args.sc).zfill(6)
+        if security_code in available_codes:
+            security_codes = [security_code]
+        else:
+            print(f"Error: Security code {security_code} not found in data")
+            print(f"Available codes: {available_codes}")
+            return 1
     
-    # Export results with precision formatting
-    result.write_csv(output_file, float_precision=2)
-    print(f"\nResults saved to {output_file}")
+    # Process each security code
+    for security_code in security_codes:
+        print(f"\n{'='*50}")
+        print(f"Processing Security Code: {security_code}")
+        print(f"{'='*50}")
+        
+        # Get opening price for this security
+        if open_price_map is None:
+            # Use the same default price for all securities
+            current_open_price = open_price_default
+        else:
+            # Look up security-specific open price
+            if security_code not in open_price_map:
+                print(f"Warning: Security code {security_code} not found in open price file, skipping...")
+                continue
+            current_open_price = open_price_map[security_code]
+        
+        # Execute boundary calculation for this security
+        result = calculate_bounds(str(file_path), current_open_price, security_code)
+        
+        # Display analysis summary
+        print(f"Opening Price: {current_open_price}")
+        print("\nBounds by TimeStamp:")
+        print(result)
+        
+        # Configure output destination
+        if args.output and len(security_codes) == 1:
+            output_file = args.output
+        else:
+            # Generate default filename using stock code
+            output_file = f"recent_{security_code}.csv"
+        
+        # Export results with precision formatting (3 decimal places)
+        result.write_csv(output_file, float_precision=3)
+        print(f"\nResults saved to {output_file}")
     
     return 0
 

@@ -1,4 +1,4 @@
-timestamp,ticker,closeprice,highprice,lowprice,openprice,turnoverValue,turnoverVol
+TimeStamp,SecurityCode,ClosePrice,HighPrice,LowPrice,OpenPrice,TurnoverValue,TurnoverVol
 2025-07-01 09:25:00,159713,0.854,0.854,0.854,0.854,300608.0,352000.0
 2025-07-01 09:31:00,159713,0.845,0.854,0.845,0.854,851024.0,1003100.0
 2025-07-01 09:32:00,159713,0.844,0.847,0.844,0.845,163512.5,193500.0
